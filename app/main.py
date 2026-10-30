@@ -8,7 +8,6 @@ Endpoints:
   POST   /repos/{repo_id}/chat        — ask a question about the repo (Phase 3)
   GET    /health                      — liveness check
 """
-import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
@@ -95,7 +94,6 @@ async def analyze(
         raise HTTPException(status_code=404, detail=str(e))
 
     # Cache hit? Return the existing repo without touching rate limits —
-    # we're not doing any expensive work.
     existing = (
         db.query(Repo)
         .filter_by(owner=ref.owner, name=ref.name, commit_sha=meta.commit_sha)
@@ -173,7 +171,7 @@ async def analyze(
 
 
 @app.get("/jobs/{job_id}", response_model=JobStatusResponse)
-async def get_job(job_id: int, db: Session = Depends(get_db)) -> JobStatusResponse:
+def get_job(job_id: int, db: Session = Depends(get_db)) -> JobStatusResponse:
     job = db.get(AnalysisJob, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -267,7 +265,7 @@ async def lookup_repo_by_url(
 
 
 @app.get("/repos", response_model=list[RepoSummary])
-async def list_repos(
+def list_repos(
     limit: int = 20,
     db: Session = Depends(get_db),
 ) -> list[RepoSummary]:
@@ -298,7 +296,7 @@ async def list_repos(
 
 
 @app.get("/repos/{repo_id}", response_model=RepoDetail)
-async def get_repo(repo_id: int, db: Session = Depends(get_db)) -> RepoDetail:
+def get_repo(repo_id: int, db: Session = Depends(get_db)) -> RepoDetail:
     repo = db.get(Repo, repo_id)
     if repo is None:
         raise HTTPException(status_code=404, detail="Repo not found")
@@ -322,7 +320,7 @@ async def get_repo(repo_id: int, db: Session = Depends(get_db)) -> RepoDetail:
 # ------------------------------------------------------------
 
 @app.post("/repos/{repo_id}/chat", response_model=ChatResponse)
-async def chat(
+def chat(
     repo_id: int,
     body: ChatRequest,
     request: Request,
@@ -346,9 +344,7 @@ async def chat(
     # Convert Pydantic history models to plain dicts for the prompt builder
     history = [{"role": m.role, "content": m.content} for m in body.history]
 
-    answer, cited = await asyncio.to_thread(
-        answer_question, db, repo_id, body.message, history
-    )
+    answer, cited = answer_question(db, repo_id, body.message, history)
 
     return ChatResponse(answer=answer, cited_files=cited)
 

@@ -16,6 +16,7 @@ import asyncio
 import logging
 from typing import Any
 
+import httpx
 from sqlalchemy.orm import Session
 
 from app.chunker import Chunk, chunk_file
@@ -55,7 +56,7 @@ async def _run_pipeline(
     job_id: int, ref: RepoRef, commit_sha: str, stars: int, primary_language: str | None
 ) -> None:
     # ---- Stage 1: fetch the tree ----
-    _update_stage(job_id, "fetching", "Reading file structure...")
+    await asyncio.to_thread(_update_stage, job_id, "fetching", "Reading file structure...")
 
     async with GitHubClient() as gh:
         tree = await gh.get_tree(ref, commit_sha)
@@ -70,39 +71,44 @@ async def _run_pipeline(
             raise ValueError("No analyzable source files found in this repo")
 
         # ---- Stage 2: LLM picks important files ----
-        _update_stage(job_id, "selecting", "Picking the files that matter most...")
-        selected_paths = llm_select_files(candidate_paths, ref.full_name)
+        await asyncio.to_thread(_update_stage, job_id, "selecting", "Picking the files that matter most...")
+        selected_paths = await asyncio.to_thread(
+            llm_select_files, candidate_paths, ref.full_name
+        )
         logger.info("Selected %d files for analysis", len(selected_paths))
 
         # ---- Stage 1 (continued): fetch selected file contents in parallel ----
-        _update_stage(job_id, "fetching", f"Fetching {len(selected_paths)} files...")
+        await asyncio.to_thread(_update_stage, job_id, "fetching", f"Fetching {len(selected_paths)} files...")
         file_contents = await _fetch_files_parallel(gh, ref, commit_sha, selected_paths)
 
     if not file_contents:
         raise ValueError("Could not read any of the selected files")
 
     # ---- Stage 3: chunk ----
-    _update_stage(job_id, "chunking", "Splitting code into meaningful pieces...")
+    await asyncio.to_thread(_update_stage, job_id, "chunking", "Splitting code into meaningful pieces...")
     all_chunks: list[Chunk] = []
     for path, content in file_contents.items():
         all_chunks.extend(chunk_file(path, content))
     logger.info("Generated %d chunks from %d files", len(all_chunks), len(file_contents))
 
     # ---- Stage 4: embed ----
-    _update_stage(job_id, "embedding", f"Understanding {len(all_chunks)} code pieces...")
+    await asyncio.to_thread(_update_stage, job_id, "embedding", f"Understanding {len(all_chunks)} code pieces...")
     embeddings = await asyncio.to_thread(
         embed_texts, [c.content for c in all_chunks]
     )
 
     # ---- Stage 5: LLM overview + module graph ----
-    _update_stage(job_id, "analyzing", "Writing the overview...")
-    overview = _generate_overview(ref.full_name, file_contents)
+    await asyncio.to_thread(_update_stage, job_id, "analyzing", "Writing the overview...")
+    overview = await asyncio.to_thread(_generate_overview, ref.full_name, file_contents)
 
-    _update_stage(job_id, "analyzing", "Building the module map...")
-    module_graph = _generate_module_graph(ref.full_name, list(file_contents.keys()), overview)
+    await asyncio.to_thread(_update_stage, job_id, "analyzing", "Building the module map...")
+    module_graph = await asyncio.to_thread(
+        _generate_module_graph, ref.full_name, list(file_contents.keys()), overview
+    )
 
     # ---- Persist everything atomically ----
-    _persist_results(
+    await asyncio.to_thread(
+        _persist_results,
         job_id=job_id,
         ref=ref,
         commit_sha=commit_sha,
@@ -116,7 +122,7 @@ async def _run_pipeline(
         primary_language=primary_language,
     )
 
-    _update_stage(job_id, "ready", "Analysis complete")
+    await asyncio.to_thread(_update_stage, job_id, "ready", "Analysis complete")
 
 
 # ------------------------------------------------------------
@@ -134,12 +140,20 @@ async def _fetch_files_parallel(
 
     async def fetch_one(path: str) -> tuple[str, str] | None:
         async with semaphore:
-            try:
-                content = await gh.get_file_content(ref, path, commit_sha)
-                return (path, content)
-            except GitHubError as e:
-                logger.warning("Skipping %s: %s", path, e)
-                return None
+            # One retry on transport errors: GitHub may have closed a pooled
+            # keep-alive connection, and the retry gets a fresh one.
+            for attempt in range(2):
+                try:
+                    content = await gh.get_file_content(ref, path, commit_sha)
+                    return (path, content)
+                except httpx.TransportError as e:
+                    if attempt == 0:
+                        continue
+                    logger.warning("Skipping %s: %s", path, e)
+                except (GitHubError, httpx.HTTPStatusError) as e:
+                    logger.warning("Skipping %s: %s", path, e)
+                    return None
+            return None
 
     results = await asyncio.gather(*[fetch_one(p) for p in paths])
     return {path: content for r in results if r for path, content in [r]}

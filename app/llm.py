@@ -5,8 +5,8 @@ Groq client wrapper.
 JSON mode via response_format, which we use for all three LLM calls in
 the analysis pipeline (file selection, overview, module graph).
 
-All calls are synchronous — Groq is fast enough that async wouldn't buy
-us much for the three sequential calls per analysis.
+All calls are synchronous; callers in async code must run them via
+asyncio.to_thread so they don't block the event loop.
 """
 import json
 import logging
@@ -27,7 +27,8 @@ _client: Groq | None = None
 def _get_client() -> Groq:
     global _client
     if _client is None:
-        _client = Groq(api_key=settings.groq_api_key)
+        # Bounded timeout so a stuck request fails the job instead of hanging it
+        _client = Groq(api_key=settings.groq_api_key, timeout=90.0, max_retries=2)
     return _client
 
 
