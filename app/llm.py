@@ -1,7 +1,7 @@
 """
 Groq client wrapper.
 
-Uses Llama 3.1 70B for reasoning. Groq's OpenAI-compatible API supports
++Uses openai/gpt-oss-120b on Groq. Groq's OpenAI-compatible API supports
 JSON mode via response_format, which we use for all three LLM calls in
 the analysis pipeline (file selection, overview, module graph).
 

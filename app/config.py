@@ -23,8 +23,8 @@ class Settings(BaseSettings):
     max_chat_messages_per_session: int = 20
 
     # Repo constraints
-    max_repo_files: int = 500
-    max_repo_size_mb: int = 5
+    max_repo_files: int = 2000
+    max_repo_size_mb: int = 50
     max_file_size_kb: int = 100
 
     @property
