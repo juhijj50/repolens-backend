@@ -36,7 +36,15 @@ def _get_model() -> "TextEmbedding":
         # Import here so app startup doesn't pull in onnxruntime
         from fastembed import TextEmbedding
         logger.info("Loading embedding model %s (first-time download may take a minute)", MODEL_NAME)
-        _model = TextEmbedding(MODEL_NAME, cache_dir=str(CACHE_DIR))
+        # Tuned for Render's 512MB limit: onnxruntime's CPU memory arena
+        # keeps a high-water-mark pool that never shrinks, and each extra
+        # thread holds its own scratch buffers. Both pushed us past 512MB.
+        _model = TextEmbedding(
+            MODEL_NAME,
+            cache_dir=str(CACHE_DIR),
+            threads=1,
+            enable_cpu_mem_arena=False,
+        )
         logger.info("Embedding model loaded")
     return _model
 
@@ -44,13 +52,14 @@ def _get_model() -> "TextEmbedding":
 def embed_texts(texts: list[str]) -> list[list[float]]:
     """
     Embed a batch of texts. Returns a list of 384-float vectors.
-    Batched internally by fastembed.
+    Batched internally by fastembed. Small batches keep peak memory low;
+    throughput barely matters at our chunk counts.
     """
     if not texts:
         return []
     model = _get_model()
     # embed() yields np arrays; we convert to plain lists for pgvector
-    return [v.tolist() for v in model.embed(texts, batch_size=32)]
+    return [v.tolist() for v in model.embed(texts, batch_size=8)]
 
 
 def embed_one(text: str) -> list[float]:

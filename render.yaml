@@ -9,3 +9,6 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.13.0
+      # glibc otherwise makes one malloc arena per thread, which bloats RSS
+      - key: MALLOC_ARENA_MAX
+        value: "2"
