@@ -33,9 +33,34 @@ from app.schemas import (
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    """Runs once at startup: enable pgvector, create tables."""
+    """Runs once at startup: enable pgvector, create tables, fail orphaned jobs."""
     init_db()
+    _fail_orphaned_jobs()
     yield
+
+
+def _fail_orphaned_jobs() -> None:
+    """
+    Background tasks live in process memory, so a deploy or Render's idle
+    spin-down kills any analysis mid-flight and leaves its job row stuck in a
+    non-terminal status forever. The frontend would poll it endlessly and the
+    in-flight guard in /analyze would keep handing it out.
+
+    Safe with a single worker (WEB_CONCURRENCY=1): any unfinished job at boot
+    belonged to a process that is gone or about to be.
+    """
+    from app.db import db_session
+
+    with db_session() as db:
+        db.query(AnalysisJob).filter(
+            AnalysisJob.status.notin_(["ready", "failed"]),
+        ).update(
+            {
+                AnalysisJob.status: "failed",
+                AnalysisJob.error_message: "Server restarted during analysis. Please try again.",
+            },
+            synchronize_session=False,
+        )
 
 
 app = FastAPI(
